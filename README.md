@@ -197,6 +197,10 @@ make test      # pytest + respx mock, không cần mạng
 make lint
 ```
 
+CI: file workflow nằm ở `docs/github-actions/`. Copy sang `.github/workflows/` để chạy
+GitHub Actions. (Lưu ý: push file `.github/workflows/` bằng **OAuth app token** sẽ bị GitHub
+từ chối nếu token thiếu scope `workflow` — khi đó dùng PAT hoặc SSH key.)
+
 ## ⚠️ Disclaimer
 
 - Tool này **tự giải tại chỗ**: không bọc dịch vụ trả phí, không gọi API ngoài.
