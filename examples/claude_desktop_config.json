@@ -2,10 +2,11 @@
   "mcpServers": {
     "captcha": {
       "command": "uvx",
-      "args": ["captcha-mcp"],
+      "args": [
+        "captcha-mcp"
+      ],
       "env": {
-        "CAPTCHA_PROVIDER": "twocaptcha",
-        "CAPTCHA_TWOCAPTCHA_KEY": "REPLACE_ME"
+        "CAPTCHA_STEALTH_BACKEND": "nodriver"
       }
     }
   }

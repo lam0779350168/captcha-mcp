@@ -1,4 +1,12 @@
-import asyncio
+"""captcha-mcp — MCP server.
+
+100% LOCAL: không gọi dịch vụ giải CAPTCHA của bên thứ ba, không API ngoài.
+  - widget non-interactive  → stealth browser local tự giải, tool đọc token từ DOM
+  - reCAPTCHA v2 image grid → AI (model của agent) đọc ảnh, tool click + lấy token
+  - image captcha           → OCR local (tesseract / ddddocr)
+"""
+
+from __future__ import annotations
 
 try:  # mcp >= 2.0
     from mcp.server.mcpserver import MCPServer as FastMCP
@@ -7,7 +15,7 @@ except ImportError:  # mcp 1.x
 
 from .config import settings
 from .detection import antibot, behavioral, fingerprint
-from .providers import get_provider
+from .solvers import ai_solver, browser_solver, ocr_solver
 from .stealth import browser as stealth_browser
 from .stealth import interaction as stealth_interaction
 from .stealth.tls_client import stealth_request
@@ -15,135 +23,125 @@ from .stealth.tls_client import stealth_request
 mcp = FastMCP("captcha-mcp")
 
 
-class _LazyProvider:
-    """Provider được dựng lười: server vẫn start được khi thiếu API key."""
-
-    def __getattr__(self, name):
-        return getattr(get_provider(), name)
-
-
-provider = _LazyProvider()
-
-
 def _proxy(proxy_url: str | None) -> str | None:
     return proxy_url or settings.proxy_url
 
 
-async def _wait_for(task_id: str, timeout: int) -> dict:
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        result = await provider.get_result(task_id)
-        if result.status == "ready":
-            return {"status": "ready", "token": result.token, "task_id": task_id}
-        if result.status == "error":
-            return {"status": "error", "error": result.error, "task_id": task_id}
-        await asyncio.sleep(settings.poll_interval)
-    return {
-        "status": "processing",
-        "task_id": task_id,
-        "hint": "call get_task_result(task_id) to poll",
-    }
-
-
-async def _solve(task_type: str, params: dict, wait: bool, timeout: int) -> dict:
-    task_id = await provider.create_task(task_type, params)
-    if wait:
-        return await _wait_for(task_id, timeout)
-    return {"status": "processing", "task_id": task_id}
-
-
-# ── reCAPTCHA v2 ───────────────────────────────────────────
+# ── CAPTCHA: widget non-interactive ─────────────────────────
 @mcp.tool()
-async def solve_recaptcha_v2(
+async def solve_turnstile(
     site_key: str,
     page_url: str,
+    timeout: int = 30,
+    headless: bool = True,
+    backend: str = "nodriver",
     proxy_url: str | None = None,
-    wait: bool = True,
-    timeout: int = 60,
 ) -> dict:
-    """Solve reCAPTCHA v2. Returns {status, token, task_id}.
-    Use wait=True to block until solved (bounded by timeout)."""
-    params: dict = {"site_key": site_key, "page_url": page_url}
-    proxy = _proxy(proxy_url)
-    if proxy:
-        params["proxy"] = proxy
-    return await _solve("recaptcha_v2", params, wait, timeout)
+    """Giải Cloudflare Turnstile bằng browser local (không dùng dịch vụ ngoài).
+    Trả {status, token, error, meta}. status: ready | timeout | not_found | error."""
+    res = await browser_solver.solve_widget(
+        "turnstile",
+        site_key,
+        page_url,
+        timeout=timeout,
+        headless=headless,
+        backend=backend,
+        proxy=_proxy(proxy_url),
+    )
+    return res.to_dict()
 
 
-# ── reCAPTCHA v3 ───────────────────────────────────────────
 @mcp.tool()
 async def solve_recaptcha_v3(
     site_key: str,
     page_url: str,
     action: str = "verify",
-    min_score: float = 0.3,
-    wait: bool = True,
-    timeout: int = 60,
-) -> dict:
-    """Solve reCAPTCHA v3 and return a score-valid token."""
-    params = {
-        "site_key": site_key,
-        "page_url": page_url,
-        "action": action,
-        "min_score": min_score,
-    }
-    return await _solve("recaptcha_v3", params, wait, timeout)
-
-
-# ── Turnstile ──────────────────────────────────────────────
-@mcp.tool()
-async def solve_turnstile(
-    site_key: str,
-    page_url: str,
+    timeout: int = 30,
+    headless: bool = True,
+    backend: str = "nodriver",
     proxy_url: str | None = None,
-    wait: bool = True,
-    timeout: int = 60,
 ) -> dict:
-    """Solve Cloudflare Turnstile. Strongly recommend a residential proxy for high success rate."""
-    params: dict = {"site_key": site_key, "page_url": page_url}
-    proxy = _proxy(proxy_url)
-    if proxy:
-        params["proxy"] = proxy
-    return await _solve("turnstile", params, wait, timeout)
+    """Giải reCAPTCHA v3 bằng browser local, trả token có score theo action."""
+    res = await browser_solver.solve_widget(
+        "recaptcha_v3",
+        site_key,
+        page_url,
+        timeout=timeout,
+        headless=headless,
+        backend=backend,
+        proxy=_proxy(proxy_url),
+        action=action,
+    )
+    return res.to_dict()
 
 
-# ── hCaptcha ───────────────────────────────────────────────
 @mcp.tool()
 async def solve_hcaptcha(
     site_key: str,
     page_url: str,
+    timeout: int = 30,
+    headless: bool = True,
+    backend: str = "nodriver",
     proxy_url: str | None = None,
-    wait: bool = True,
-    timeout: int = 60,
 ) -> dict:
-    """Solve hCaptcha."""
-    params: dict = {"site_key": site_key, "page_url": page_url}
-    proxy = _proxy(proxy_url)
-    if proxy:
-        params["proxy"] = proxy
-    return await _solve("hcaptcha", params, wait, timeout)
+    """Giải hCaptcha bằng browser local (widget non-interactive)."""
+    res = await browser_solver.solve_widget(
+        "hcaptcha",
+        site_key,
+        page_url,
+        timeout=timeout,
+        headless=headless,
+        backend=backend,
+        proxy=_proxy(proxy_url),
+    )
+    return res.to_dict()
 
 
-# ── Image captcha ──────────────────────────────────────────
+# ── CAPTCHA: AI-in-the-loop ─────────────────────────────────
 @mcp.tool()
-async def solve_image_captcha(
-    image_base64: str,
-    instructions: str = "",
-    wait: bool = True,
-    timeout: int = 60,
+async def solve_recaptcha_v2(
+    page_url: str,
+    site_key: str = "",
+    timeout: int = 30,
+    headless: bool = True,
+    backend: str = "nodriver",
+    proxy_url: str | None = None,
 ) -> dict:
-    """Solve an image/grid captcha from base64. instructions = prompt for human solver."""
-    params = {"image_base64": image_base64, "instructions": instructions}
-    return await _solve("image", params, wait, timeout)
+    """Giải reCAPTCHA v2 bằng browser local.
+    Nếu không cần chọn ảnh → trả token luôn.
+    Nếu hiện image grid → status='needs_ai' kèm meta.tiles (đường dẫn ảnh từng ô)
+    và meta.challenge_id; đọc ảnh rồi gọi submit_recaptcha_v2(challenge_id, tiles=[...])."""
+    res = await ai_solver.start_recaptcha_v2(
+        page_url,
+        site_key=site_key or None,
+        timeout=timeout,
+        headless=headless,
+        backend=backend,
+        proxy=_proxy(proxy_url),
+    )
+    return res.to_dict()
 
 
-# ── Polling tool ───────────────────────────────────────────
 @mcp.tool()
-async def get_task_result(task_id: str) -> dict:
-    """Poll result of a task created earlier (when wait=False or status='processing')."""
-    r = await provider.get_result(task_id)
-    return {"status": r.status, "token": r.token, "error": r.error, "task_id": task_id}
+async def submit_recaptcha_v2(challenge_id: str, tiles: list[int]) -> dict:
+    """Nộp đáp án cho reCAPTCHA v2 image grid (do AI đọc ảnh).
+    tiles = list index ảnh đúng (0-based, theo thứ tự meta.tiles)."""
+    res = await ai_solver.submit_recaptcha_v2(challenge_id, tiles)
+    return res.to_dict()
+
+
+@mcp.tool()
+async def close_captcha_challenge(challenge_id: str) -> dict:
+    """Huỷ challenge đang mở và đóng browser."""
+    return await ai_solver.close_challenge(challenge_id)
+
+
+@mcp.tool()
+def solve_image_captcha(image_base64: str, instructions: str = "") -> dict:
+    """Giải image captcha bằng OCR local (tesseract/ddddocr).
+    Nếu OCR confidence thấp → status='needs_ai' + meta.image_path để AI đọc ảnh."""
+    res = ocr_solver.solve_image(image_base64, instructions)
+    return res.to_dict()
 
 
 # ── Stealth HTTP (TLS fingerprint) ──────────────────────────
@@ -203,18 +201,6 @@ async def stealth_snapshot(browser_id: str) -> dict:
 
 
 @mcp.tool()
-async def close_stealth_browser(browser_id: str) -> dict:
-    """Đóng stealth browser."""
-    return await stealth_browser.close_browser(browser_id)
-
-
-@mcp.tool()
-def list_stealth_browsers() -> dict:
-    """Liệt kê các stealth browser đang mở."""
-    return stealth_browser.list_browsers()
-
-
-@mcp.tool()
 async def browse_with_humanization(
     browser_id: str,
     actions: list[dict],
@@ -224,6 +210,18 @@ async def browse_with_humanization(
     actions: [{"type":"click","selector":"#btn"},{"type":"type","selector":"#q","text":"abc"},
     {"type":"scroll","y":800},{"type":"wait","seconds":1},{"type":"press","key":"Enter"}]"""
     return await stealth_interaction.perform_actions(browser_id, actions, humanize=humanize)
+
+
+@mcp.tool()
+async def close_stealth_browser(browser_id: str) -> dict:
+    """Đóng stealth browser."""
+    return await stealth_browser.close_browser(browser_id)
+
+
+@mcp.tool()
+def list_stealth_browsers() -> dict:
+    """Liệt kê các stealth browser đang mở."""
+    return stealth_browser.list_browsers()
 
 
 # ── Detection / diagnosis ──────────────────────────────────

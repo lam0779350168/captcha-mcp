@@ -1,86 +1,95 @@
 # captcha-mcp
 
-MCP server gồm **2 lớp**:
+MCP server giải CAPTCHA **100% tại chỗ** — không gọi dịch vụ giải CAPTCHA của bên thứ ba,
+không gọi API OCR ngoài, không cần cloud solver.
 
-1. **CAPTCHA solving** — bọc provider có API sẵn: **2Captcha**, **CapSolver**, **CapMonster**, **Nopecha**.
-2. **Stealth & detection** — TLS fingerprint (`curl_cffi`), stealth browser (nodriver / cloakbrowser),
-   hành vi người (Bezier mouse, nhịp gõ phím), và chẩn đoán anti-bot/fingerprint.
+Ba tầng trong một interface:
 
-Lý do có lớp 2: CAPTCHA chỉ là cửa ải cuối. Anti-bot hiện đại chặn bạn **trước khi** CAPTCHA
-xuất hiện, dựa trên sự nhất quán của TLS + UA + canvas + WebGL + hành vi. Tool này cho agent
-**tự chẩn đoán** trước khi quyết định dùng plain HTTP, stealth browser, hay provider giải CAPTCHA.
+1. **Solver local** — widget CAPTCHA thật chạy trong stealth browser local; token lấy thẳng
+   từ DOM. Với reCAPTCHA v2 image grid, **AI (model của agent) đọc ảnh** rồi solver click
+   và lấy token.
+2. **Stealth** — TLS fingerprint (`curl_cffi`), stealth browser (nodriver / cloakbrowser),
+   hành vi người (Bezier mouse, nhịp gõ phím).
+3. **Detection** — chẩn đoán anti-bot vendor, CAPTCHA nào đang chặn, fingerprint có mâu thuẫn không.
 
-Dùng `FastMCP` (SDK chính thức của MCP), transport **stdio** (mặc định) và **SSE**.
+Lý do có tầng 2-3: CAPTCHA chỉ là cửa ải cuối. Anti-bot hiện đại chặn bạn **trước khi** CAPTCHA
+xuất hiện, dựa trên sự nhất quán của TLS + UA + canvas + WebGL + hành vi.
+
+Transport: **stdio** (mặc định) · **sse** · **streamable-http**.
 
 ## Install
 
-**uvx (không cần cài):**
-
 ```bash
-uvx captcha-mcp
+uvx captcha-mcp                       # chạy luôn, không cài
 ```
 
-**Docker:**
-
-```bash
-docker build -t captcha-mcp .
-docker run -i --rm -e CAPTCHA_PROVIDER=twocaptcha -e CAPTCHA_TWOCAPTCHA_KEY=... captcha-mcp
-```
-
-**From source:**
+Hoặc từ source:
 
 ```bash
 git clone https://github.com/you/captcha-mcp.git && cd captcha-mcp
-uv pip install -e ".[dev]"        # hoặc: pip install -e ".[dev,stealth]"
+uv pip install -e ".[dev]"            # thêm stealth: ".[dev,stealth]"
 captcha-mcp
 ```
 
-`stealth` extra = `nodriver` (browser CDP-direct). `curl_cffi` nằm trong deps chính
-(TLS impersonation). `cloakbrowser` phải tự cài riêng nếu muốn dùng backend đó.
+Phụ thuộc ngoài (đều chạy offline):
+
+| Cần cho | Cài cách |
+|---|---|
+| stealth browser | `pip install 'captcha-mcp[stealth]'` (nodriver) — cần Chrome/Chromium có sẵn |
+| TLS impersonation | `curl_cffi` (đã nằm trong deps chính) |
+| OCR image captcha | `apt install tesseract-ocr` hoặc `pip install ddddocr` |
 
 ## Config
 
-Tất cả biến đều prefix `CAPTCHA_`:
+Tất cả biến prefix `CAPTCHA_`:
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
-| `CAPTCHA_PROVIDER` | `twocaptcha` | `twocaptcha` \| `capsolver` \| `capmonster` \| `nopecha` |
-| `CAPTCHA_TWOCAPTCHA_KEY` | – | key provider đang dùng |
-| `CAPTCHA_CAPSOLVER_KEY` | – | |
-| `CAPTCHA_CAPMONSTER_KEY` | – | |
-| `CAPTCHA_NOPECHA_KEY` | – | |
-| `CAPTCHA_DEFAULT_TIMEOUT` | `60` | giây poll mặc định |
-| `CAPTCHA_POLL_INTERVAL` | `2.0` | giây giữa 2 lần poll |
-| `CAPTCHA_PROXY_URL` | – | proxy mặc định (Turnstile nên dùng residential proxy) |
+| `CAPTCHA_WIDGET_TIMEOUT` | `30` | giây chờ token của widget |
+| `CAPTCHA_PAGE_WAIT` | `2.0` | giây chờ sau khi navigate |
+| `CAPTCHA_OCR_BACKEND` | `auto` | `auto` \| `tesseract` \| `ddddocr` |
+| `CAPTCHA_OCR_PSM` | `7` | tesseract page segmentation mode |
+| `CAPTCHA_OCR_MIN_CONFIDENCE` | `60` | dưới ngưỡng này → trả ảnh cho AI đọc |
 | `CAPTCHA_STEALTH_BACKEND` | `nodriver` | `nodriver` \| `cloakbrowser` |
 | `CAPTCHA_STEALTH_HEADLESS` | `true` | |
 | `CAPTCHA_TLS_IMPERSONATE` | `chrome` | `chrome` \| `chrome124` \| `firefox` \| `safari` \| `edge` |
 | `CAPTCHA_HTTP_TIMEOUT` | `30` | giây |
+| `CAPTCHA_PROXY_URL` | – | proxy mặc định (Turnstile hay ràng buộc IP) |
 | `MCP_TRANSPORT` | `stdio` | `stdio` \| `sse` \| `streamable-http` |
 
-Copy `.env.example` → `.env` rồi điền key. Server vẫn start được khi thiếu key
-(provider được dựng lười); lỗi chỉ nổ ra khi gọi tool.
+Copy `.env.example` → `.env`. Server start được với config rỗng.
 
 ## Tool list
 
-### Lớp CAPTCHA
+### Solver (local)
 
-| Tool | Input chính | Trả về |
+| Tool | Input | Trả về |
 |---|---|---|
-| `solve_recaptcha_v2` | `site_key`, `page_url`, `proxy_url?`, `wait?`, `timeout?` | `{status, token, task_id}` |
-| `solve_recaptcha_v3` | `site_key`, `page_url`, `action?`, `min_score?`, `wait?`, `timeout?` | `{status, token, task_id}` |
-| `solve_turnstile` | `site_key`, `page_url`, `proxy_url?`, `wait?`, `timeout?` | `{status, token, task_id}` |
-| `solve_hcaptcha` | `site_key`, `page_url`, `proxy_url?`, `wait?`, `timeout?` | `{status, token, task_id}` |
-| `solve_image_captcha` | `image_base64`, `instructions?`, `wait?`, `timeout?` | `{status, token, task_id}` |
-| `get_task_result` | `task_id` | `{status, token, error, task_id}` |
+| `solve_turnstile` | `site_key`, `page_url`, `timeout?`, `headless?`, `backend?`, `proxy_url?` | `{status, token, error, meta}` |
+| `solve_recaptcha_v3` | `site_key`, `page_url`, `action?`, ... | `{status, token, ...}` |
+| `solve_hcaptcha` | `site_key`, `page_url`, ... | `{status, token, ...}` |
+| `solve_recaptcha_v2` | `page_url`, `site_key?`, ... | `{status: ready \| needs_ai, token \| meta.tiles}` |
+| `submit_recaptcha_v2` | `challenge_id`, `tiles: list[int]` | `{status, token}` |
+| `close_captcha_challenge` | `challenge_id` | `{status}` |
+| `solve_image_captcha` | `image_base64`, `instructions?` | `{status, text, meta.image_path}` |
 
-`status` là `ready` | `processing` | `error`.
+`status`: `ready` · `needs_ai` · `challenge_interactive` · `timeout` · `not_found` · `error`.
 
-- `wait=True` (mặc định): block tới khi có token, tối đa `timeout` giây.
-- `wait=False`: trả `task_id` ngay, client tự poll bằng `get_task_result` — dùng khi
-  tool call của client có timeout ngắn.
+**Luồng AI-in-the-loop (reCAPTCHA v2 image grid):**
 
-### Lớp stealth
+```
+1. solve_recaptcha_v2(page_url=...)
+   → status="needs_ai", meta.instruction="Select all traffic lights",
+     meta.tiles=[{index:0, path:"/root/.cache/captcha-mcp/ab12.png"}, ...]
+2. Agent đọc các ảnh (tool Read / vision) → tự chọn ô
+3. submit_recaptcha_v2(challenge_id="cap-xxx", tiles=[1,4,7])
+   → {status:"ready", token:"03AGdBq26..."}
+```
+
+Có OCR sẵn thì `solve_image_captcha` trả `status="ready"` kèm `text` luôn; nếu confidence
+thấp thì trả `status="needs_ai"` + `meta.image_path` để AI đọc.
+
+### Stealth
 
 | Tool | Input chính | Trả về |
 |---|---|---|
@@ -93,10 +102,10 @@ Copy `.env.example` → `.env` rồi điền key. Server vẫn start được kh
 | `close_stealth_browser` | `browser_id` | `{status}` |
 | `list_stealth_browsers` | – | `{browsers[]}` |
 
-`actions[]` nhận: `{"type":"click","selector":"#b"}`, `{"type":"type","selector":"#q","text":"abc"}`,
+`actions[]`: `{"type":"click","selector":"#b"}`, `{"type":"type","selector":"#q","text":"abc"}`,
 `{"type":"scroll","y":800}`, `{"type":"wait","seconds":1}`, `{"type":"press","key":"Enter"}`.
 
-### Lớp detection
+### Detection
 
 | Tool | Input chính | Trả về |
 |---|---|---|
@@ -104,20 +113,20 @@ Copy `.env.example` → `.env` rồi điền key. Server vẫn start được kh
 | `get_fingerprint_report` | `browser_id` | `{signals, coherence:{consistency_score, findings[], verdict}}` |
 | `analyze_behavior` | `events[]` | `{robot_probability, verdict, metrics, findings[]}` |
 
-JSON schema đầy đủ được sinh tự động từ FastMCP; client sẽ tự đọc được.
+JSON schema đầy đủ được sinh tự động từ FastMCP.
 
 ## Luồng dùng điển hình
 
-1. `detect_antibot(url)` → biết trang bị bảo vệ bởi gì (Cloudflare / DataDome / PerimeterX…),
-   có loại CAPTCHA nào, có challenge không.
-2. Không có anti-bot mạnh → `stealth_http_request(url)` (nhanh, nhẹ, TLS giả).
+1. `detect_antibot(url)` → biết trang bị chặn bởi gì (Cloudflare / DataDome / PerimeterX…),
+   có CAPTCHA nào, có challenge không.
+2. Không có anti-bot mạnh → `stealth_http_request(url)` (nhanh, TLS giả).
 3. Có JS challenge → `launch_stealth_browser()` → `stealth_navigate()` → `browse_with_humanization()`.
-4. Vẫn gặp CAPTCHA → `solve_turnstile()` / `solve_recaptcha_v2()`.
-5. Bị chặn dai dẳng → `get_fingerprint_report(browser_id)` xem fingerprint nào đang mâu thuẫn
-   (UA Windows nhưng WebGL SwiftShader, plugin rỗng, UA "HeadlessChrome"…), rồi chỉnh cấu hình.
+4. Có CAPTCHA → `solve_turnstile()` / `solve_recaptcha_v3()` (token local).
+5. reCAPTCHA v2 image grid → `solve_recaptcha_v2()` → AI đọc ảnh → `submit_recaptcha_v2()`.
+6. Vẫn bị chặn → `get_fingerprint_report(browser_id)` xem chỗ nào đang mâu thuẫn
+   (UA Windows nhưng WebGL SwiftShader, UA "HeadlessChrome"…).
 
 ## Client config
-
 
 Claude Desktop — `examples/claude_desktop_config.json`:
 
@@ -127,10 +136,7 @@ Claude Desktop — `examples/claude_desktop_config.json`:
     "captcha": {
       "command": "uvx",
       "args": ["captcha-mcp"],
-      "env": {
-        "CAPTCHA_PROVIDER": "twocaptcha",
-        "CAPTCHA_TWOCAPTCHA_KEY": "REPLACE_ME"
-      }
+      "env": { "CAPTCHA_STEALTH_BACKEND": "nodriver" }
     }
   }
 }
@@ -138,20 +144,12 @@ Claude Desktop — `examples/claude_desktop_config.json`:
 
 Cursor — `examples/cursor_config.json`, Cline — `examples/cline_config.json`.
 
-SSE (chạy nền, nhiều agent cùng dùng):
+SSE (nhiều agent cùng dùng):
 
 ```bash
-MCP_TRANSPORT=sse CAPTCHA_PROVIDER=twocaptcha CAPTCHA_TWOCAPTCHA_KEY=... captcha-mcp
+MCP_TRANSPORT=sse captcha-mcp
 # → http://localhost:8000/sse
 ```
-
-## Thêm provider mới
-
-1. Tạo `src/captcha_mcp/providers/<name>.py`, subclass `BaseProvider`.
-2. Implement `create_task()` → task_id và `get_result()` → `TaskResult`.
-3. Thêm nhánh vào `get_provider()` trong `providers/__init__.py`.
-
-Core không cần sửa.
 
 ## Kiến trúc
 
@@ -159,9 +157,14 @@ Core không cần sửa.
 src/captcha_mcp/
 ├── server.py            # FastMCP — đăng ký TẤT CẢ tool
 ├── config.py            # Settings (env-based)
-├── providers/           # wrapper API giải captcha (2captcha/capsolver/capmonster/nopecha)
+├── solvers/
+│   ├── base.py          # SolveResult / SolveStatus
+│   ├── browser_solver.py# widget non-interactive (Turnstile / reCAPTCHA v3 / hCaptcha)
+│   ├── ai_solver.py     # reCAPTCHA v2 grid: trích ảnh ô → AI đọc → click → token
+│   ├── ocr_solver.py    # image captcha qua tesseract / ddddocr (local)
+│   └── _cdp.py          # CDP isolated world / OOPIF session (đọc trong iframe cross-origin)
 ├── stealth/
-│   ├── browser.py       # nodriver / cloakbrowser wrapper + registry browser
+│   ├── browser.py       # nodriver / cloakbrowser wrapper + registry
 │   ├── tls_client.py    # curl_cffi impersonate (JA3/JA4), fallback httpx
 │   ├── humanize.py      # Bezier mouse, delay ngẫu nhiên, nhịp gõ phím
 │   └── interaction.py   # click/type/scroll/press với hành vi người
@@ -169,38 +172,37 @@ src/captcha_mcp/
 │   ├── antibot.py       # vendor/anti-bot/CAPTCHA/fingerprint signals
 │   ├── fingerprint.py   # đọc signals + chấm điểm nhất quán (coherence)
 │   └── behavioral.py    # phát hiện pattern hành vi robotic
-└── utils.py             # helper (error mapping, json, truncate)
+└── utils.py             # lưu ảnh cache, helper
 ```
 
 ### Vì sao thiết kế thế
 
-- **Provider pluggable**: thêm provider = 1 file + 1 nhánh, không sửa core.
-- **Stealth backend pluggable**: `nodriver` (nhẹ, pass test fingerprint tốt) hoặc `cloakbrowser`
-  (patch C++ Chromium, mạnh hơn trên site khó) — chọn qua `CAPTCHA_STEALTH_BACKEND`.
-- **Detection chỉ báo cáo, không bypass**: `detect_antibot` giúp agent hiểu môi trường để chọn
-  chiến lược, không tự động vượt mọi thứ.
-- **Fingerprint phải nhất quán**: `get_fingerprint_report` chỉ ra mâu thuẫn (UA vs TLS,
-  UA vs platform, WebGL software vs UA desktop) — đây là thứ Cloudflare/DataDome kiểm kỹ nhất.
-- **`curl_cffi` không thay browser**: nó chỉ giải quyết TLS/HTTP2 fingerprint. Trang có JS
-  challenge ("Just a moment") vẫn cần stealth browser thật.
+- **Không phụ thuộc dịch vụ ngoài**: không cần key, không tốn tiền/请求, không rò dữ liệu ra ngoài.
+  Đổi lại: phần "AI đọc image grid" cần model của agent có vision — đó là AI **của bạn**, chạy sẵn.
+- **Browser là nguồn sự thật**: token được widget thật sinh ra và nằm trong DOM → ta đọc,
+  không mô phỏng token.
+- **Cross-origin iframe**: reCAPTCHA iframe là OOPIF → dùng `Target.attachToTarget` +
+  `Runtime.evaluate` với `sessionId` (`solvers/_cdp.py`), không đụng WebDriver.
+- **Detection chỉ báo cáo, không bypass**: `detect_antibot` để agent hiểu môi trường, không
+  tự động vượt mọi thứ.
+- **Fingerprint phải nhất quán**: `get_fingerprint_report` chỉ ra mâu thuẫn — đây là thứ
+  Cloudflare/DataDome kiểm kỹ nhất.
+- **`curl_cffi` không thay browser**: nó chỉ giải quyết TLS/HTTP2. JS challenge vẫn cần browser.
 
 ## Dev
 
 ```bash
 make install
-make test      # pytest + respx mock provider, không cần key thật
+make test      # pytest + respx mock, không cần mạng
 make lint
 ```
 
 ## ⚠️ Disclaimer
 
-Tool này **bọc dịch vụ của bên thứ ba**; nó không tự implement solver nào.
-
-- Bạn tự tạo tài khoản và trả tiền cho provider (2Captcha / CapSolver / CapMonster / Nopecha).
-- Tuân thủ Terms of Service của provider và của target.
-- Chỉ dùng cho việc hợp pháp: test bảo mật **có uỷ quyền**, automation nội bộ của bạn.
+- Tool này **tự giải tại chỗ**: không bọc dịch vụ trả phí, không gọi API ngoài.
+- Chỉ dùng cho việc hợp pháp: test bảo mật **có uỷ quyền**, automation nội bộ của bạn, QA.
 - Lớp stealth/detection dùng để **chẩn đoán và test trên hệ thống của bạn hoặc hệ thống được
-  cấp quyền kiểm thử** (pentest có written authorization, QA nội bộ).
+  cấp quyền kiểm thử**.
 - Vượt anti-bot/CAPTCHA để vượt kiểm soát truy cập trái phép là vi phạm pháp luật ở nhiều nước
   (bao gồm CFAA và nghị định EU) — tool không bảo vệ bạn khỏi trách nhiệm pháp lý này.
 - Không dùng cho spam, credential stuffing, vượt rate limit, hay bất kỳ hành vi gây thiệt hại nào.

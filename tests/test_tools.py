@@ -1,53 +1,52 @@
 import pytest
 
 from captcha_mcp import server
-from captcha_mcp.providers.base import BaseProvider, TaskResult
-
-
-class FakeProvider(BaseProvider):
-    name = "fake"
-
-    def __init__(self):
-        self.tasks = {}
-
-    async def create_task(self, task_type, params):
-        tid = f"task-{len(self.tasks) + 1}"
-        self.tasks[tid] = TaskResult(status="ready", token="TOKEN123")
-        self.tasks[tid].task_type = task_type
-        self.tasks[tid].params = params
-        return tid
-
-    async def get_result(self, task_id):
-        return self.tasks[task_id]
+from captcha_mcp.solvers.base import SolveResult, SolveStatus
 
 
 @pytest.mark.asyncio
-async def test_solve_recaptcha_v2_ok(monkeypatch):
-    monkeypatch.setattr(server, "provider", FakeProvider())
-    out = await server.solve_recaptcha_v2("site", "https://example.com")
-    assert out["status"] == "ready" and out["token"] == "TOKEN123"
+async def test_solve_turnstile_uses_local_solver(monkeypatch):
+    seen = {}
+
+    async def fake(kind, site_key, page_url, **kw):
+        seen.update(kind=kind, site_key=site_key, page_url=page_url)
+        return SolveResult(status=SolveStatus.READY, token="LOCAL-TOKEN")
+
+    monkeypatch.setattr(server.browser_solver, "solve_widget", fake)
+    out = await server.solve_turnstile("sk", "https://example.com")
+    assert out["status"] == "ready" and out["token"] == "LOCAL-TOKEN"
+    assert seen["kind"] == "turnstile"
 
 
 @pytest.mark.asyncio
-async def test_solve_turnstile_passes_proxy(monkeypatch):
-    fake = FakeProvider()
-    monkeypatch.setattr(server, "provider", fake)
-    await server.solve_turnstile("sk", "https://example.com", proxy_url="http://p:1.2.3.4:8080")
-    params = next(iter(fake.tasks.values())).params
-    assert params["proxy"] == "http://p:1.2.3.4:8080"
+async def test_solve_recaptcha_v2_needs_ai(monkeypatch):
+    async def fake(page_url, **kw):
+        return SolveResult(
+            status=SolveStatus.NEEDS_AI,
+            error="image grid",
+            meta={"challenge_id": "cap-1", "tiles": [{"index": 0, "path": "/tmp/a.png"}]},
+        )
+
+    monkeypatch.setattr(server.ai_solver, "start_recaptcha_v2", fake)
+    out = await server.solve_recaptcha_v2("https://example.com")
+    assert out["status"] == "needs_ai"
+    assert out["meta"]["challenge_id"] == "cap-1"
 
 
 @pytest.mark.asyncio
-async def test_wait_false_returns_task_id(monkeypatch):
-    monkeypatch.setattr(server, "provider", FakeProvider())
-    out = await server.solve_hcaptcha("sk", "https://example.com", wait=False)
-    assert out["status"] == "processing" and out["task_id"] == "task-1"
+async def test_submit_recaptcha_v2(monkeypatch):
+    async def fake(challenge_id, tiles):
+        return SolveResult(status=SolveStatus.READY, token="T", meta={"tiles": tiles})
+
+    monkeypatch.setattr(server.ai_solver, "submit_recaptcha_v2", fake)
+    out = await server.submit_recaptcha_v2("cap-1", [1, 4])
+    assert out["status"] == "ready" and out["meta"]["tiles"] == [1, 4]
 
 
-@pytest.mark.asyncio
-async def test_get_task_result(monkeypatch):
-    fake = FakeProvider()
-    monkeypatch.setattr(server, "provider", fake)
-    tid = await fake.create_task("recaptcha_v2", {})
-    out = await server.get_task_result(tid)
-    assert out["status"] == "ready" and out["token"] == "TOKEN123"
+def test_solve_image_captcha_tool(monkeypatch):
+    def fake(image_base64, instructions=""):
+        return SolveResult(status=SolveStatus.READY, text="ABCD")
+
+    monkeypatch.setattr(server.ocr_solver, "solve_image", fake)
+    out = server.solve_image_captcha("AAAA")
+    assert out["status"] == "ready" and out["text"] == "ABCD"

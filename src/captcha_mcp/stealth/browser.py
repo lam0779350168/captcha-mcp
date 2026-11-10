@@ -9,6 +9,7 @@ Cả hai đều optional dependency: thiếu thì tool báo lỗi rõ ràng, ser
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import importlib
 from typing import Any
@@ -151,6 +152,48 @@ async def close_browser(browser_id: str) -> dict:
         await entry["browser"].close()
     _BROWSERS.pop(browser_id, None)
     return {"status": "closed", "browser_id": browser_id}
+
+
+async def mouse_click(page, x: float, y: float, delay: float = 0.08) -> dict:
+    """Click thật bằng input event của browser tại toạ độ CSS px.
+
+    Dùng cho phần tử nằm trong iframe cross-origin: input event do browser gửi đi nên
+    không bị giới hạn same-origin như JS click.
+    """
+    from nodriver import cdp
+
+    none = cdp.input_.MouseButton.NONE
+    left = cdp.input_.MouseButton.LEFT
+    try:
+        await page.send(
+            cdp.input_.dispatch_mouse_event(type_="mouseMoved", x=x, y=y, button=none, buttons=0)
+        )
+        await asyncio.sleep(delay)
+        await page.send(
+            cdp.input_.dispatch_mouse_event(
+                type_="mousePressed", x=x, y=y, button=left, buttons=1, click_count=1
+            )
+        )
+        await asyncio.sleep(0.04)
+        await page.send(
+            cdp.input_.dispatch_mouse_event(
+                type_="mouseReleased", x=x, y=y, button=left, buttons=0, click_count=1
+            )
+        )
+        return {"status": "ok", "x": x, "y": y}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
+
+
+async def screenshot_png(page) -> bytes | None:
+    """Chụp màn hình hiện tại, trả bytes PNG (device pixels)."""
+    from nodriver import cdp
+
+    try:
+        b64 = await page.send(cdp.page.capture_screenshot(format_="png"))
+        return base64.b64decode(b64)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def list_browsers() -> dict:
