@@ -89,6 +89,43 @@ Copy `.env.example` → `.env`. Server start được với config rỗng.
 Có OCR sẵn thì `solve_image_captcha` trả `status="ready"` kèm `text` luôn; nếu confidence
 thấp thì trả `status="needs_ai"` + `meta.image_path` để AI đọc.
 
+### reCAPTCHA v2 image grid — AI đọc ảnh
+
+```
+1. solve_recaptcha_v2(page_url=...)
+   → status="needs_ai",
+     meta.instruction="Select all images with a fire hydrant",
+     meta.challenge_image="/root/.cache/captcha-mcp/ab12.png"   ← ảnh đã đánh số từng ô
+     meta.tiles=[{index:0,path:"..."}, ...]
+2. Agent đọc ảnh (vision) → chọn ô
+3. submit_recaptcha_v2(challenge_id="cap-xxx", tiles=[0,1])
+   → {status:"ready", token:"03AGdBq26..."}
+```
+
+**Yêu cầu**: client phải có model **vision** (đọc được ảnh). Đây là phần "AI giải" —
+không có dịch vụ ngoài, dùng đúng model của agent đang chạy.
+
+Cơ chế đã kiểm chứng trên reCAPTCHA v2 thật (Google demo):
+- mở popup challenge (click checkbox bằng input event thật) ✓
+- dò lưới ô **chính xác 9/9** (3×3) và **12/12** (3×4) bằng phân tích pixel ✓
+- click rơi **đúng ô** (dấu tick xanh xuất hiện đúng ở ô AI chọn) ✓
+- bấm VERIFY → Google đánh giá → trả challenge mới → vòng lặp tiếp tục ✓
+- nếu Google **đổi ảnh** trong lúc AI đọc → tool phát hiện bằng hash ảnh và trả ảnh mới
+  (`meta.stale`) thay vì áp đáp án cũ ✓
+- chọn sai → **không** sinh token giả, trả `status="timeout"` + ảnh mới ✓
+
+Độ chính xác cuối cùng phụ thuộc khả năng đọc ảnh của model của client (ô ảnh nhỏ, nhiễu).
+
+### Image captcha — OCR local (đã hoàn chỉnh, không cần vision)
+
+```jsonc
+{ "tool": "solve_image_captcha", "args": { "image_base64": "<base64 png>" } }
+// → { "status": "ready", "text": "A7B9", "meta": { "ocr_backend": "tesseract", "confidence": 92 } }
+// confidence thấp → { "status": "needs_ai", "meta": { "image_path": "..." } }
+```
+
+Dùng tesseract (CLI) hoặc ddddocr — cả hai chạy **offline**, không gọi API ngoài.
+
 ### Stealth
 
 | Tool | Input chính | Trả về |

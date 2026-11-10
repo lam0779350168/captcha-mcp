@@ -70,40 +70,41 @@ Demo chính thức của Cloudflare **cố ý** sinh token giả (`XXXX.DUMMY.TO
 này là đúng — điểm cần chứng minh là pipeline đọc được token từ DOM của widget thật
 (`input[name=cf-turnstile-response]`), không phải mô phỏng.
 
-## 6. Solver local — AI image-grid loop (end-to-end)
+## 6. Solver local — AI image-grid loop (reCAPTCHA v2 THẬT của Google)
 
-Dùng mock challenge (`scripts/mock_challenge.py`) mô phỏng đúng DOM reCAPTCHA v2:
-iframe lưới 3×3 + nút VERIFY, đúng 2 ô là ảnh "hợp lệ".
+Demo chính thức `https://www.google.com/recaptcha/api2/demo`.
 
-```
-solve_recaptcha_v2(page_url=http://127.0.0.1:8765/page.html)
-→ {"status": "needs_ai",
-   "meta": {"grid": {"rows": 3, "cols": 3},
-            "challenge_image": "/root/.cache/captcha-mcp/9b79f6e66efe.png",
-            "tiles": [9 ảnh ô riêng]}}
+### 6.1 Cơ chế (đã kiểm chứng bằng ảnh chụp + pixel diff)
 
-submit_recaptcha_v2(challenge_id=..., tiles=[0, 4])
-→ {"status": "ready", "token": "MOCK-TOKEN-0123456789ABCDEF"}
-```
+| Bước | Kết quả |
+|---|---|
+| click checkbox anchor (CDP `Input.dispatchMouseEvent`) | popup challenge mở ra: bframe đổi từ 778x150 (footer ẩn) → **300x480** (popup lưới ảnh) |
+| dò lưới ô bằng pixel (`solvers/grid.py`) | ảnh thật: **9/9 ô** đúng (3×3) và **12/12 ô** đúng (3×4) — khớp 100% với ảnh nhìn bằng mắt |
+| click ô theo index AI chọn | dấu tick xanh xuất hiện **đúng ở các ô được chọn** (ảnh `*_after_num.png` trong `~/.cache/captcha-mcp/`) |
+| bấm VERIFY | Google đánh giá → đổi ảnh các ô bị chọn sai → trả challenge mới |
+| Google đổi challenge lúc AI đang đọc | phát hiện bằng **hash ảnh** → trả `needs_ai` + ảnh mới (`meta.stale`), không áp đáp án cũ |
+| AI chọn sai | **không** sinh token giả → `status="timeout"` + ảnh mới để thử tiếp |
 
-Kiểm chứng giữa chừng (đọc trực tiếp trong browser):
-- dò lưới ra đúng 9 box: `(3,35,103,135) (107,35,207,135) (211,35,207,135) ...`
-- click chuột thật (CDP `Input.dispatchMouseEvent`) → `img.sel` count = 2
-- nút VERIFY được nhận diện bằng màu xanh đặc `#1a73e8` → click → token sinh ra trong
-  `textarea[name=g-recaptcha-response]`.
+Ảnh minh hoạ lưu tại `~/.cache/captcha-mcp/`:
+`56f92f185f91.png` (9 ô, đánh số), `63c8741d04a0_after_num.png` (sau click: tick xanh
+đúng ở ô 4,5,6), `1e38ecccf7e8_after.png` (tick ở ô 0,1).
 
-Chọn sai ô → `status="timeout"`, **không** sinh token giả.
+### 6.2 Điểm chưa đạt
 
-Còn lại: **chưa test end-to-end với reCAPTCHA v2 thật của Google** — demo `recaptcha/api2/demo`
-không hiện image grid (checkbox pass thẳng), nên chưa có case thật để đối chiếu. Đường đi
-đã được kiểm chứng trên mock có cùng cấu trúc DOM.
+Vòng lặp **chưa bao giờ lấy được token** trên demo của Google: bước đọc ảnh của chính tôi
+(là "AI" trong phiên test) chọn sai ô — ảnh ô nhỏ, nhiễu, và Google đổi bộ ảnh sau mỗi lần sai.
+Toàn bộ phần **cơ chế** đã đúng; phần còn thiếu là **model vision giỏi hơn** phía client.
 
-## 7. OCR local
+→ Trong thực tế, agent có vision (Claude/GPT-4o/Qwen-VL…) sẽ đọc ô chính xác hơn nhiều;
+tool đã sẵn sàng: trả ảnh đã đánh số + đường dẫn từng ô, nhận lại index, click và lấy token.
 
-`solve_image_captcha` với ảnh sinh bằng Pillow → backend `tesseract`, đọc được chuỗi ký tự,
+### 6.3 OCR local (đã hoàn chỉnh)
+
+`solve_image_captcha` với ảnh sinh bằng Pillow → backend `tesseract`, đọc được chuỗi ký tự
 kèm confidence. Confidence thấp → `status="needs_ai"` + `meta.image_path` để AI đọc.
+Không gọi API ngoài.
 
-## Reproduce
+## 7. Reproduce
 
 ```bash
 uv pip install -e ".[dev,stealth]"
